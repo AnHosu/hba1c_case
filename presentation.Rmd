@@ -1,27 +1,35 @@
 ---
-title: "Case"
+title: "HbA1c Case"
 author: "Anders Ellegaard"
 date: "2023 01 03"
-output: 
+output:
   ioslides_presentation:
-    widescreen: true
+    widescreen: yes
     css: styles.css
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(echo = FALSE, include = TRUE)
 library(magrittr)
 library(ggplot2)
+colour <- list(
+  orange_dark = "#fb8500",
+  orange_light = "#ffb703",
+  blue_dark = "#023047",
+  azure = "#219ebc",
+  blue_light = "#8ecae6"
+)
 ```
 
 ## Contents
 
- - Data prep for table
- - Table
- - Data prep for plot
- - Plot
+ - Code for delivery 1
+ - Delivery 1: table
+ - Code for delivery 2
+ - Delivery 2: plot
+ - Extra: Average treatment difference
 
-```{r duplicates, include=FALSE}
+```{r duplicates, include = FALSE}
 # While preparing for the table, I spotted a duplicate
 readxl::read_excel("data.xlsx", sheet = "ADLB") %>%
   dplyr::filter(VISITNUM == 10, PARAMCD == "C64849B") %>%
@@ -90,13 +98,14 @@ tbl %>%
 ## Data Prep for Plot {.smaller}
 
 ```{r echo=TRUE}
-plt <- readxl::read_excel("data.xlsx", sheet = "ADLB") %>%
+hba1c <- readxl::read_excel("data.xlsx", sheet = "ADLB") %>%
   dplyr::filter(FASFL == "Y", PARAMCD == "C64849B", ANL01FL == "Y") %>%
   dplyr::rename(HbA1c = AVAL) %>%
   dplyr::mutate(
     week = stringr::str_extract(AVISIT, "Week (\\d+)", group = 1),
     week = as.numeric(week)
-  ) %>%
+  )
+plt <- hba1c %>%
   dplyr::group_by(TRTP, week) %>%
   dplyr::summarise(
     median = median(HbA1c, na.rm = TRUE),
@@ -130,6 +139,10 @@ ggplot(plt, aes(x = week, y = median, colour = TRTP)) +
   labs(x = "Week", y = "HbA1c (%)", colour = "") +
   scale_x_continuous(breaks = unique(plt[["week"]])) +
   scale_y_continuous(breaks = integers_between(ymin*2, ymax*2)/2) +
+  scale_colour_manual(values = c(
+    "Treatment A" = colour$blue_dark,
+    "Treatment B" = colour$orange_dark
+  )) +
   theme(
     panel.grid.minor = element_blank(),
     panel.grid.major.y = element_line(colour = "grey90"),
@@ -143,3 +156,128 @@ ggplot(plt, aes(x = week, y = median, colour = TRTP)) +
 
 *Points are the median HbA1c (%) for each treatment. The vertical bars span the 5.5% to 94.5% quantile range.*
 *The emphasised horizontal lines represent 6.5% and 7.5% HbA1c respectively.*
+
+# Extra
+
+## Treatment Difference Histogram {.flexbox .vcenter .smaller}
+
+```{r}
+a <- dplyr::filter(hba1c, week == 20, TRTP == "Treatment A")
+b <- dplyr::filter(hba1c, week == 20, TRTP == "Treatment B")
+ggplot() +
+  geom_histogram(
+    data = a,
+    mapping = aes(x = HbA1c, fill = TRTP),
+    binwidth = 0.1,
+    alpha = 0.5
+  ) +
+  geom_histogram(
+    data = b,
+    mapping = aes(x = HbA1c, fill = TRTP),
+    binwidth = 0.1,
+    alpha = 0.5
+  ) +
+  labs(y = "Count", x = "HbA1c (%)", fill = "", title = "HbA1c Week 20") +
+  scale_fill_manual(values = c(
+    "Treatment A" = colour$blue_dark,
+    "Treatment B" = colour$orange_dark
+  )) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(colour = "grey90"),
+    panel.grid.major.x = element_blank(),
+    panel.background = element_rect(fill = "#f5f5f0"),
+    plot.background = element_rect(fill = "#f5f5f0"),
+    legend.background = element_rect(fill = "transparent"),
+    legend.key = element_rect(fill = "transparent")
+  )
+```
+
+## Average Treatment Difference Model {.smaller}
+
+```{r model, cache=TRUE, results=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+treatments <- unique(hba1c$TRTP)
+weeks <- unique(hba1c$week)
+data <- list(
+  N = nrow(hba1c),
+  N_trt = length(treatments),
+  N_week = length(weeks),
+  trt_ind = match(hba1c$TRTP, treatments),
+  week_ind = match(hba1c$week, weeks),
+  y = hba1c$HbA1c
+)
+post <- rstan::stan(
+  "trt_diff.stan",
+  data = data,
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  seed = 4444
+)
+res <- rstan::extract(post) %>%
+  tibble::as_tibble() %>%
+  dplyr::pull(mu_diff)
+samples <- purrr::imap(weeks, function(w, i) {
+  tibble::tibble(week = w, mu_diff = res[ , i])
+}) %>%
+  dplyr::bind_rows()
+```
+
+
+## Average Treatment Difference Week 20 {.flexbox .vcenter .smaller}
+
+```{r}
+samples %>%
+  dplyr::filter(week == 20) %>%
+  ggplot(aes(x = mu_diff)) +
+  geom_histogram(alpha = 0.5, fill = colour$orange_dark, binwidth = 0.01) +
+  labs(y = "", x = "Difference in HbA1c (%) B - A", fill = "", title = "B - A Average Treatment Difference, Week 20") +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(colour = "grey90"),
+    panel.grid.major.x = element_blank(),
+    panel.background = element_rect(fill = "#f5f5f0"),
+    plot.background = element_rect(fill = "#f5f5f0"),
+    legend.background = element_rect(fill = "transparent"),
+    legend.key = element_rect(fill = "transparent")
+  )
+```
+
+
+## Average Treatment Difference Summary {.flexbox .vcenter .smaller}
+
+```{r}
+samples_summary <- samples %>%
+  dplyr::group_by(week) %>%
+  dplyr::summarise(
+    median = median(mu_diff, na.rm = TRUE),
+    q55 = quantile(mu_diff, 0.055, na.rm = TRUE),
+    q945 = quantile(mu_diff, 0.945, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ymin <- -1
+ymax <- 1
+ggplot(samples_summary, aes(x = week, y = median)) +
+  geom_errorbar(
+    aes(ymin = q55, ymax = q945),
+    alpha = 0.5,
+    width = 1.5,
+    linetype = 2,
+    colour = colour$orange_dark
+  ) +
+  geom_point(colour = colour$orange_dark) +
+  labs(x = "Week", y = "Difference HbA1c (%)") +
+  scale_x_continuous(breaks = unique(samples_summary[["week"]])) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(colour = "grey90"),
+    panel.grid.major.x = element_blank(),
+    panel.background = element_rect(fill = "#f5f5f0"),
+    plot.background = element_rect(fill = "#f5f5f0"),
+    legend.background = element_rect(fill = "transparent"),
+    legend.key = element_rect(fill = "transparent")
+  )
+```
+
+*Points are the median treatment difference (B- A) in HbA1c (%). The vertical bars span the 5.5% to 94.5% quantile range.*
