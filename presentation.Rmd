@@ -1,0 +1,145 @@
+---
+title: "Case"
+author: "Anders Ellegaard"
+date: "2023 01 03"
+output: 
+  ioslides_presentation:
+    widescreen: true
+    css: styles.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(magrittr)
+library(ggplot2)
+```
+
+## Contents
+
+ - Data prep for table
+ - Table
+ - Data prep for plot
+ - Plot
+
+```{r duplicates, include=FALSE}
+# While preparing for the table, I spotted a duplicate
+readxl::read_excel("data.xlsx", sheet = "ADLB") %>%
+  dplyr::filter(VISITNUM == 10, PARAMCD == "C64849B") %>%
+  dplyr::group_by(SUBJID) %>%
+  dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
+  dplyr::filter(n > 1)
+```
+
+## Data Prep for Table {.smaller}
+
+```{r echo=TRUE}
+hba1c <- readxl::read_excel("data.xlsx", sheet = "ADLB") %>%
+  dplyr::filter(VISITNUM == 10, PARAMCD == "C64849B", ANL01FL == "Y") %>%
+  dplyr::select(SUBJID, AVAL) %>%
+  dplyr::rename(HbA1c = AVAL)
+# Just filter, join, and summarise
+tbl <- readxl::read_excel("data.xlsx", sheet = "ADSL") %>%
+  dplyr::filter(FASFL == "Y") %>%
+  dplyr::left_join(hba1c, by = "SUBJID") %>%
+  dplyr::bind_rows(., dplyr::mutate(., TRT01P = "Total")) %>%
+  dplyr::group_by(TRT01P) %>%
+  dplyr::summarise(dplyr::across(
+    where(is.double),
+    list(
+      N_nna = ~ sum(!is.na(.x)),
+      N_na = ~ sum(is.na(.x)),
+      mean = ~ mean(.x, na.rm = TRUE),
+      sd = ~ sd(.x, na.rm = TRUE),
+      median = ~ median(.x, na.rm = TRUE),
+      min = ~ min(.x, na.rm = TRUE),
+      max = ~ max(.x, na.rm = TRUE)
+    ),
+    .names = "{.col}-{.fn}"
+  )) %>%
+  tidyr::pivot_longer(-TRT01P) %>%
+  tidyr::separate(name, into = c("param", "fun"), sep = "-") %>%
+  tidyr::pivot_wider(
+    id_cols = c(param, fun),
+    names_from = TRT01P,
+    values_from = value
+  )
+```
+
+## Delivery 1: Table
+
+```{r}
+tbl %>%
+  dplyr::rename(
+    Parameter = param,
+    Aggregate = fun
+  ) %>%
+  DT::datatable(
+    options = list(
+      pageLength = 7,
+      dom = "tlp",
+      lengthMenu = c(7, 14, 21, 28)
+    ),
+    rownames = FALSE
+  ) %>%
+  DT::formatSignif(
+    columns = c("Total", "Treatment A", "Treatment B"),
+    digits = 3
+  )
+```
+
+## Data Prep for Plot {.smaller}
+
+```{r echo=TRUE}
+plt <- readxl::read_excel("data.xlsx", sheet = "ADLB") %>%
+  dplyr::filter(FASFL == "Y", PARAMCD == "C64849B", ANL01FL == "Y") %>%
+  dplyr::rename(HbA1c = AVAL) %>%
+  dplyr::mutate(
+    week = stringr::str_extract(AVISIT, "Week (\\d+)", group = 1),
+    week = as.numeric(week)
+  ) %>%
+  dplyr::group_by(TRTP, week) %>%
+  dplyr::summarise(
+    median = median(HbA1c, na.rm = TRUE),
+    q55 = quantile(HbA1c, 0.055, na.rm = TRUE),
+    q945 = quantile(HbA1c, 0.945, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+## Delivery 2: Plot {.flexbox .vcenter .smaller}
+
+```{r plot}
+integers_between <- function(a, b) {
+  l <- ceiling(min(a, b))
+  u <- floor(max(a, b))
+  if (l > u) return()
+  return(seq.int(l, u, 1))
+}
+ymin <- 5
+ymax <- 10
+ggplot(plt, aes(x = week, y = median, colour = TRTP)) +
+  geom_hline(yintercept = 6.5, alpha = 0.5) +
+  geom_hline(yintercept = 7, alpha = 0.5) +
+  geom_errorbar(
+    aes(ymin = q55, ymax = q945),
+    alpha = 0.5,
+    width = 1.5,
+    linetype = 2
+  ) +
+  geom_point() +
+  labs(x = "Week", y = "HbA1c (%)", colour = "") +
+  scale_x_continuous(breaks = unique(plt[["week"]])) +
+  scale_y_continuous(breaks = integers_between(ymin*2, ymax*2)/2) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(colour = "grey90"),
+    panel.grid.major.x = element_blank(),
+    panel.background = element_rect(fill = "#f5f5f0"),
+    plot.background = element_rect(fill = "#f5f5f0"),
+    legend.background = element_rect(fill = "transparent"),
+    legend.key = element_rect(fill = "transparent")
+  )
+```
+
+*Points are the median HbA1c (%) for each treatment. The vertical bars span the 5.5% to 94.5% quantile range.*
+*The emphasised horizontal lines represent 6.5% and 7.5% HbA1c respectively.*

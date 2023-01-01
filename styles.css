@@ -1,0 +1,21 @@
+.smaller {
+  margin-top: 5px;
+}
+
+article.smaller pre {
+  font-size: 14px;
+  line-height: 18px;
+}
+
+slides > slide > hgroup + article p {
+margin-bottom: 0em;
+}
+
+slides > slide {
+  background: none;
+  background-color: #b9e7f0;
+}
+
+.prettyprint {
+  background-color: #b9e7f0;
+}
